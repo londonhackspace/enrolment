@@ -4,7 +4,7 @@ import os
 import pygame
 from pygame.locals import *
 from pgu import gui
-import time, serial, argparse, logging, threading, Queue
+import time, serial, argparse, logging, threading, Queue, sys, traceback
 from RFUID import rfid
 from addcard import addCard
 
@@ -36,11 +36,15 @@ class cardReader(object):
 			elif uid:
 				logging.info("Got card with uid %s", uid)
 				self.queue.put_nowait(uid)
-				pygame.event.post(pygame.event.Event(pygame.USEREVENT, {"card": uid}))
+				pygame.event.post(pygame.event.Event(pygame.USEREVENT, card=uid))
 				pygame.event.pump()
 				self.current = uid
 
 			time.sleep(2)
+
+def timeout():
+	pygame.event.post(pygame.event.Event(pygame.USEREVENT, timeout=True))
+	pygame.event.pump()
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -67,17 +71,16 @@ class enroler:
 		"Ininitializes a new pygame screen using the framebuffer"
 		# Based on "Python GUI in Linux frame buffer"
 		# http://www.karoltomala.com/blog/?p=679
-		disp_no = os.getenv("DISPLAY")
-		if disp_no:
-			logging.info("I'm running under X display = {0}".format(disp_no))
+#		disp_no = os.getenv("DISPLAY")
+#		if disp_no:
+#			logging.info("I'm running under X display = {0}".format(disp_no))
 		# Check which frame buffer drivers are available
 		# Start with fbcon since directfb hangs with composite output
 		drivers = ['fbcon', 'directfb', 'svgalib']
 		found = False
 		for driver in drivers:
 			# Make sure that SDL_VIDEODRIVER is set
-			if not os.getenv('SDL_VIDEODRIVER'):
-				os.putenv('SDL_VIDEODRIVER', driver)
+			os.putenv('SDL_VIDEODRIVER', driver)
 			try:
 				pygame.display.init()
 			except pygame.error:
@@ -92,15 +95,18 @@ class enroler:
 
 		size = (pygame.display.Info().current_w, pygame.display.Info().current_h)
 		logging.info("Framebuffer size: %d x %d" % (size[0], size[1]))
-		self.screen = pygame.display.set_mode(size, pygame.FULLSCREEN)
+		pygame.event.set_grab(True)
+		self.screen = pygame.display.set_mode(size, pygame.FULLSCREEN, 16)
 		# Clear the screen to start
 		self.screen.fill((0, 0, 0))
 		# Initialise font support
 		pygame.font.init()
-		self.myfont = pygame.font.SysFont("Arial", 30)		
+		self.myfont = pygame.font.SysFont("Arial", 30)
 
 		# Render the screen
 		pygame.display.update()
+
+		# we don't use a mouse
 		pygame.mouse.set_visible(False)
 
 		self.queue = Queue.Queue(42)
@@ -109,17 +115,27 @@ class enroler:
 		self.t.setDaemon(True)
 		self.t.start()
 
-	def mkapp(self):
-		pass
+		self.state = 'saver'
+		self.timeout = None
+		self.success_time = None
  
 	def __del__(self):
 		"Destructor to make sure pygame shuts down, etc."
+		# do we really need this?
+
+	def reset_timeout(self):
+		# 5 min timeout for the screensaver
+		if self.timeout:
+			self.timeout.cancel()
+		self.timeout = threading.Timer(60.0 * 5, timeout)
+		self.timeout.setDaemon(True)
+		self.timeout.start()
 
 # todo
 #
 # Default : bouncy logo
 #
-# card swiped -> hello
+# card swiped or key press -> hello
 #
 # if card_is_unknown():
 #	if enrole():
@@ -132,21 +148,24 @@ class enroler:
 # 	print_things()
 #
 	def go(self):
+		self.reset_timeout()
+		
 		black = (0, 0, 0)
-		self.screen.fill(black)
-		self.screensaver()
+		white = (255, 255, 255)
+		red = (255, 0, 0)
+		green = (0, 255, 0)
 
 		mytheme = gui.Theme('big_theme')
 
 		app = gui.App(theme=mytheme)
 		app.connect(gui.QUIT, app.quit, None)
 
-		c = gui.Table()
-		fg = (255, 255, 255)
+		c = gui.Table(hpadding=4, vpadding=4)
+		fg = white
 
 		c.tr()
 		logo = gui.Image("Hackspace_Wiki.png")
-		c.td(logo, colspan=4)
+		c.td(logo, colspan=2)
 
 		c.tr()
 		c.td(gui.Label("Please login to add your card.", color=fg), colspan=2)
@@ -158,53 +177,139 @@ class enroler:
 
 		c.tr()
 		uid = None
-		card_label = gui.Label("", color=fg)
+		card_label = gui.Label("Please place an RFID card or token on the reader", color=fg)
 		c.td(card_label, colspan=2)
 
 		def activated():
-			uid = card_label.value.split()[1]
+			ers = [error1, error2, error3]
+			for e in ers:
+				e.set_text('')
+				e.style.color = (255, 0, 0)
+				e.repaint()
+			app.update()
+			app.paint()
+			pygame.display.flip()
+
+			uid = card_label.value.split()
+			if len(uid) == 2:
+				uid = uid[1]
+			else:
+				uid = None
 			logging.info("adding card with uid %s for %s" % (uid, username.value))
 			ac = addCard()
-			if ac.add_card(username.value, password.value, uid):
+			ret, message = ac.add_card(username.value, password.value, uid)
+			
+			if ret:
 				logging.info("Success!")
+				self.state = "success"
+				self.success_time = time.time() + 2.0
+				self.reset_timeout()
+				username.value = ''
+				password.value = ''
+				# goto success page, then timeout -> screensaver
+				self.screen.fill(black)
+				success.update()
+				success.paint()
+				pygame.display.flip()
+			else:
+				message = message.split('\n')
+				for i,l in enumerate(message):
+					if i < len(ers):
+						ers[i].set_text(l)
+						ers[i].repaint()
+
+				app.update()
+				app.paint()
+				pygame.display.flip()
+		
+		def canceled():
+			ers = [error1, error2, error3]
+			for e in ers:
+				e.set_text('')
+				e.style.color = (255, 0, 0)
+				e.repaint()
+			username.value = ''
+			password.value = ''
+			card_label.set_text("Please place an RFID card or token on the reader")
+			card_label.repaint()
+
+			app.update()
+			app.paint()
+			pygame.display.flip()
+			
+			self.state = "saver"
+			
 		
 		c.tr()
 		c.td(gui.Label("Email: ", color=fg))
 				
-		username = gui.Input(value='', size=12)
+		username = gui.Input(value='', size=16)
 		username.connect("activate", activated)
-		c.td(username, colspan=3)
+		c.td(username)
 		
 		c.tr()
 		c.td(gui.Label("Password: ", color=fg))
 
-		password = gui.Password(value='', size=12)
+		password = gui.Password(value='', size=16)
 		password.connect("activate", activated)
-		c.td(password, colspan=3)
+		c.td(password)
 
 		c.tr()
 		login = gui.Button("Log in", color=fg)
 		login.connect(gui.CLICK, activated)
-		c.td(login, colspan=4, align=-1)
+		c.td(login, colspan=2, valign=-1)
 
-		tab_group = [username, password, login]
+		cancel = gui.Button("Cancel", color=fg)
+		cancel.connect(gui.CLICK, canceled)
+		c.td(cancel, colspan=2, valign=-1)
+
+		c.tr()
+		error1 = gui.Label(size=60, color=red)
+		error1.blur()
+		c.td(error1, colspan=2)
+
+		c.tr()
+		error2 = gui.Label(size=60, color=red)
+		error2.blur()
+		c.td(error2, colspan=2)
+
+		c.tr()
+		error3 = gui.Label(size=60, color=red)
+		error3.blur()
+		c.td(error3, colspan=2)
+
+		tab_group = [username, password, login, cancel]
 		tab_idx = 0
-
-		c2 = gui.Container(align=-1,valign=-1)
-		left = (pygame.display.Info().current_w - lw) / 2
-		c2.add(c, left, 20)
-		
 		tab_group[tab_idx].focus()
 		
-		app.init(c2)
+		app.init(c)
+
+		success = gui.App(theme=mytheme)
+		success.connect(gui.QUIT, success.quit, None)
 		
-		app.update()
-		app.paint()
-		pygame.display.flip()
+		s = gui.Table(hpadding=4, vpadding=4)
 		
+		s.tr()
+		logo = gui.Image("Hackspace_Wiki.png")
+		s.td(logo, colspan=2)
+
+		s.tr()
+		s.td(gui.Label("Card successfully added!", color=green), colspan=2)
+		
+		success.init(s)
+		
+		uid = None
 		while True:
-			uid = None
-			changed = False
+			if self.state == 'saver':
+				logging.info("screen saving")
+				self.screen.fill(black)
+				# blocks until something happens.
+				self.screensaver()
+				self.state = "awoken"
+				# start out timeout again
+				# so we go back into saver mode
+				self.reset_timeout()
+
 			try:
 				uid = self.queue.get_nowait()
 			except Queue.Empty:
@@ -214,7 +319,7 @@ class enroler:
 
 			if uid:
 				logging.info("card found: %s", uid)
-				changed = True
+				self.state = 'unknown card'
 				text = "Card: " + uid
 				self.screen.fill(black)
 				card_label.set_text(text)
@@ -222,15 +327,44 @@ class enroler:
 				app.update()
 				app.paint()
 				pygame.display.flip()
-				
+				self.reset_timeout()
+				uid = None
+
 #			for event in pygame.event.get():
 			if True:
 				event = pygame.event.wait()
 				logging.info(event)
+				self.reset_timeout()
 
 				handled = False
 
-				if event.type == pygame.QUIT: sys.exit()
+				if self.state == "success":
+					if self.success_time > time.time():
+						success.update()
+						success.paint()
+						pygame.display.flip()
+						# we don't want to handle the key up event from hitting
+						# enter to activate the form!
+						handled = True
+					else:
+						# some other key press, so back to the form.
+						self.state = 'something'
+					
+				if event.type == pygame.QUIT:
+					self.timeout.cancel()
+					sys.exit()
+				
+				if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+					self.timeout.cancel()
+					sys.exit()
+
+				if event.type == pygame.USEREVENT and 'timeout' in event.dict:
+					self.state = 'saver'
+					self.timeout.cancel()
+					# no need to start it again if we are going back into saver mode
+
+				if event.type == pygame.USEREVENT and 'card' in event.dict:
+					uid = event.card
 
 				if event.type == pygame.KEYDOWN and event.key == pygame.K_TAB:
 					tab_idx += 1
@@ -243,17 +377,28 @@ class enroler:
 				if not handled:
 					app.event(event)
 
-				changed = True
+			if self.state != 'saver':
+				# reset our timeout
+				self.reset_timeout()
 
-			if changed:
-				self.screen.fill(black)
-				app.update()
-				app.paint()
-				pygame.display.flip()
+				if self.state == 'success' and self.success_time > time.time():
+					# we don't want to handle the key up event from hitting
+					# enter to activate the form!
+					success.update()
+					success.paint()
+					pygame.display.flip()
+				else:
+					self.screen.fill(black)
+					app.update()
+					app.paint()
+					pygame.display.flip()
 
 #			time.sleep(0.2)
 
 	def screensaver(self):
+		# stop the timeout just incase it's running
+		self.timeout.cancel()
+
 		speed = [2, 2]
 		
 		size = (pygame.display.Info().current_w, pygame.display.Info().current_h)
@@ -265,11 +410,13 @@ class enroler:
 		pygame.event.clear()
 		while True:
 			for event in pygame.event.get():
-				print event
 				if event.type == pygame.KEYDOWN:
+					if event.key == pygame.K_ESCAPE:
+						pygame.event.post(event)
 					return
-#			if pygame.event.peek():
-#				return
+				elif event.type == pygame.USEREVENT:
+					pygame.event.post(event)
+					return
 			
 			ballrect = ballrect.move(speed)
 			
@@ -281,11 +428,22 @@ class enroler:
 			self.screen.fill(black)
 			self.screen.blit(ball, ballrect)
 			pygame.display.flip()
-			time.sleep(0.1)
+			time.sleep(0.05)
 
 if __name__ == "__main__":
 	args = parse_args()
 	set_logger()
 
 	en = enroler()
-	en.go()
+	try:
+		en.go()
+	except Exception, e:
+		logging.critical('Exception from go() %s', e)
+		tb = traceback.format_exc()
+		tb = tb.split('\n')
+		for l in tb:
+			logging.critical(l)
+		if en.timeout:
+			# otherwise we get stuck waiting for our thread to end.
+			# should really setDaemon(True) somewhere?
+			en.timeout.cancel()
