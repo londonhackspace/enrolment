@@ -24,7 +24,7 @@ class addCard:
             page = urllib2.urlopen(BASE_URL + url, params)
             return etree.HTML(page.read())
 
-        find_exception = CSSSelector('.alert')
+        find_exception = CSSSelector('.alert-danger')
 
         login = browse('login.php')
         token = login.xpath('//input[@name="token"]')[0]
@@ -39,8 +39,8 @@ class addCard:
         exc = find_exception(logged_in)
         if exc:
             logging.warn('Could not authenticate')
-            logging.warn(etree.tostring(exc[0], method="text", pretty_print=True))
-            return (False, etree.tostring(exc[0], method="text", pretty_print=True))
+            logging.warn(etree.tostring(exc[0], method="text", encoding='utf-8', pretty_print=True))
+            return (False, etree.tostring(exc[0], method="text", encoding='utf-8', pretty_print=True))
 
         logout_a = logged_in.xpath('//a[@href="/logout.php"]')
         if not logout_a:
@@ -59,8 +59,8 @@ class addCard:
         exc = find_exception(card_added)
         if exc:
             logging.critical('Could not modify entry')
-            logging.critical(etree.tostring(exc[0], method="text", pretty_print=True))
-            return (False, etree.tostring(exc[0], method="text", pretty_print=True))
+            logging.critical(etree.tostring(exc[0], method="text", encoding='utf-8', pretty_print=True))
+            return (False, etree.tostring(exc[0], method="text", encoding='utf-8', pretty_print=True))
 
         logging.info("card %s for %s successfully added!" % (uid, email))
 
