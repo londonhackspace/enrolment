@@ -9,27 +9,37 @@ from RFUID import rfid
 from addcard import addCard
 
 class cardReader(object):
-	def __init__(self, queue):
+	def __init__(self, queue, debugid):
+		self.readerok = True
 		try:
 			# TODO: keep this reader for checkForCard
 			with rfid.Pcsc.reader() as reader:
 				logging.info('PCSC firmware: %s', reader.pn532.firmware())
 		except (serial.SerialException, serial.SerialTimeoutException), e:
 			logging.warn('Serial error during initialisation: %s', e)
+			self.readerok = False
 		except Exception, e:
 			logging.critical('Unexpected error during initialisation: %s', e)
+			self.readerok = False
 		self.current = None
 		self.queue = queue
+		self.debugid = debugid
 		
 	def run(self):
 		while True:
-			try:
-		  		with rfid.Pcsc.reader() as reader:
-		  			for tag in reader.pn532.scan():
-		  				uid = tag.uid.upper()
-			except rfid.NoCardException:
-				self.current = None
-				uid = None
+			if self.readerok:
+				try:
+					with rfid.Pcsc.reader() as reader:
+						for tag in reader.pn532.scan():
+							uid = tag.uid.upper()
+				except rfid.NoCardException:
+					self.current = None
+					uid = None
+			else:
+				if self.debugid:
+					uid = self.debugid
+				else:
+					uid = None
 
 			if self.current and self.current == uid:
 				pass
@@ -49,14 +59,16 @@ def timeout():
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('-f', '--foreground', action='store_true')
+    parser.add_argument('-i', '--id', type=str, nargs=1, help="a card uid (used for debugging if you don't have a reader handy)")
     args = parser.parse_args()
     return args
 
 def set_logger():
-    if args.foreground:
+    if True: #args.foreground:
         logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s', level=logging.DEBUG)
     else:
-        logfac = config.get('enrolement', 'logfacility')
+#        logfac = config.get('enrolement', 'logfacility')
+	logfac = "user"
         logfac = SysLogHandler.facility_names[logfac]
         logger = logging.root
         logger.setLevel(logging.DEBUG)
@@ -67,36 +79,44 @@ def set_logger():
                                                                                  
 class enroler:
 	screen = None;
-	def __init__(self):
+	def __init__(self, id):
 		"Ininitializes a new pygame screen using the framebuffer"
 		# Based on "Python GUI in Linux frame buffer"
 		# http://www.karoltomala.com/blog/?p=679
-#		disp_no = os.getenv("DISPLAY")
-#		if disp_no:
-#			logging.info("I'm running under X display = {0}".format(disp_no))
-		# Check which frame buffer drivers are available
-		# Start with fbcon since directfb hangs with composite output
-		drivers = ['fbcon', 'directfb', 'svgalib']
-		found = False
-		for driver in drivers:
-			# Make sure that SDL_VIDEODRIVER is set
-			os.putenv('SDL_VIDEODRIVER', driver)
-			try:
-				pygame.display.init()
-			except pygame.error:
-				logging.warn('Driver: {0} failed.'.format(driver))
-				continue
-			found = True
-			logging.info("using %s", driver)
-			break
+		disp_no = os.getenv("DISPLAY")
+		if disp_no:
+			logging.info("I'm running under X display = {0}".format(disp_no))
+			pygame.display.init()
+			self.screen = pygame.display.set_mode((1280, 1024), 0, 16)
+			size = (pygame.display.Info().current_w, pygame.display.Info().current_h)
+		else:
+			# Check which frame buffer drivers are available
+			# Start with fbcon since directfb hangs with composite output
+			drivers = ['fbcon', 'directfb', 'svgalib']
+			found = False
+			for driver in drivers:
+				# Make sure that SDL_VIDEODRIVER is set
+				os.putenv('SDL_VIDEODRIVER', driver)
+				try:
+					pygame.display.init()
+				except pygame.error:
+					logging.warn('Driver: {0} failed.'.format(driver))
+					continue
+				found = True
+				logging.info("using %s", driver)
+				break
 
-		if not found:
-			raise Exception('No suitable video driver found!')
+			if not found:
+				raise Exception('No suitable video driver found!')
 
-		size = (pygame.display.Info().current_w, pygame.display.Info().current_h)
-		logging.info("Framebuffer size: %d x %d" % (size[0], size[1]))
-		pygame.event.set_grab(True)
-		self.screen = pygame.display.set_mode(size, pygame.FULLSCREEN, 16)
+			size = (pygame.display.Info().current_w, pygame.display.Info().current_h)
+			logging.info("Framebuffer size: %d x %d" % (size[0], size[1]))
+			self.screen = pygame.display.set_mode(size, pygame.FULLSCREEN, 16)
+			# we don't use a mouse
+			pygame.mouse.set_visible(False)
+			pygame.event.set_grab(True)
+
+
 		# Clear the screen to start
 		self.screen.fill((0, 0, 0))
 		# Initialise font support
@@ -105,12 +125,13 @@ class enroler:
 
 		# Render the screen
 		pygame.display.update()
-
-		# we don't use a mouse
-		pygame.mouse.set_visible(False)
-
+		
+		#
+		# we can probably just use pygame events and lose the queue,
+		# but leave it for now.
+		#
 		self.queue = Queue.Queue(42)
-		self.cardreader = cardReader(self.queue)
+		self.cardreader = cardReader(self.queue, id)
 		self.t = threading.Thread(name="cardreader", target=self.cardreader.run)
 		self.t.setDaemon(True)
 		self.t.start()
@@ -118,6 +139,8 @@ class enroler:
 		self.state = 'saver'
 		self.timeout = None
 		self.success_time = None
+ 
+		self.debugid = id
  
 	def __del__(self):
 		"Destructor to make sure pygame shuts down, etc."
@@ -434,7 +457,7 @@ if __name__ == "__main__":
 	args = parse_args()
 	set_logger()
 
-	en = enroler()
+	en = enroler(id=args.id[0])
 	try:
 		en.go()
 	except Exception, e:
