@@ -457,7 +457,11 @@ if __name__ == "__main__":
 	args = parse_args()
 	set_logger()
 
-	en = enroler(id=args.id[0])
+	if args.id:
+		en = enroler(id=args.id[0])
+	else:
+		en = enroler(id=None)
+
 	try:
 		en.go()
 	except Exception, e:
