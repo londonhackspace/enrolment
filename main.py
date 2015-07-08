@@ -113,7 +113,7 @@ class enroler:
 			logging.info("Framebuffer size: %d x %d" % (size[0], size[1]))
 			self.screen = pygame.display.set_mode(size, pygame.FULLSCREEN, 16)
 			# we don't use a mouse
-			pygame.mouse.set_visible(False)
+			pygame.mouse.set_visible(True)
 			pygame.event.set_grab(True)
 
 
@@ -356,7 +356,8 @@ class enroler:
 #			for event in pygame.event.get():
 			if True:
 				event = pygame.event.wait()
-				logging.info(event)
+				if event.type != pygame.MOUSEMOTION:
+					logging.info(event)
 				self.reset_timeout()
 
 				handled = False
