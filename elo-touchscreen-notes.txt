@@ -1,0 +1,21 @@
+
+Section "InputClass"
+	Identifier	"calibration"
+	MatchProduct	"Elo Serial TouchScreen"
+	Option	"Calibration"	"399 3731 3604 472"
+	Option	"SwapAxes"	"0"
+EndSection
+
+inverts:
+
+xinput  set-int-prop  16 271 32 96, 4000, 4000, 96
+
+with calibration:
+
+xinput  set-int-prop  16 271 32 399 3731 3604 472
+
+inputattach --elotouch /dev/ttyUSB0 --daemon
+
+https://help.ubuntu.com/community/EloTouchScreen
+http://who-t.blogspot.fi/2012/07/elographics-touchscreen-setup.html
+http://who-t.blogspot.co.uk/2012/07/elographics-touchscreen-setup.html
